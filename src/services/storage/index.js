@@ -9,18 +9,18 @@ const { logger } = require('../../utils/logger');
  * @returns {Promise<Object>} - Result of the storage operation
  */
 const storeScrapedData = async (source, data, options = {}) => {
-  const { jobId } = options;
+  const { jobId, updateTotalOnly = false, currentTotal = 0 } = options;
   
   try {
     logger.info(`Storing ${data.length} items from ${source}`);
     
-    // Update job status if jobId is provided
-    if (jobId) {
+    // Update job status if jobId is provided and not just updating totals
+    if (jobId && !updateTotalOnly) {
       await ScraperJob.findOneAndUpdate(
         { jobId },
         { 
           status: 'running',
-          startTime: new Date(),
+          ...(currentTotal === 0 ? { startTime: new Date() } : {})
         }
       );
     }
@@ -66,29 +66,47 @@ const storeScrapedData = async (source, data, options = {}) => {
     
     // Update job status if jobId is provided
     if (jobId) {
-      const endTime = new Date();
-      const startTime = await ScraperJob.findOne({ jobId }).select('startTime');
-      const duration = startTime ? endTime - startTime.startTime : 0;
+      const totalItemsScraped = currentTotal + result.created + result.updated;
       
-      await ScraperJob.findOneAndUpdate(
-        { jobId },
-        { 
-          status: 'completed',
-          endTime,
-          duration,
-          itemsScraped: result.created + result.updated,
-        }
-      );
+      // Update the job with the latest counts without changing status to completed
+      if (updateTotalOnly) {
+        await ScraperJob.findOneAndUpdate(
+          { jobId },
+          { 
+            itemsScraped: totalItemsScraped,
+            lastBatchTime: new Date()
+          }
+        );
+      } else {
+        // If not just updating totals, update job as completed
+        const endTime = new Date();
+        const startTime = await ScraperJob.findOne({ jobId }).select('startTime');
+        const duration = startTime ? (endTime - startTime.startTime) / 1000 : 0;
+        
+        await ScraperJob.findOneAndUpdate(
+          { jobId },
+          { 
+            status: 'completed',
+            endTime,
+            duration,
+            itemsScraped: totalItemsScraped,
+          }
+        );
+      }
     }
     
     logger.info(`Storage complete: ${result.created} created, ${result.updated} updated, ${result.failed} failed`);
     
-    return result;
+    // Return the results along with the updated total
+    return {
+      ...result,
+      totalItemsScraped: currentTotal + result.created + result.updated
+    };
   } catch (error) {
     logger.error(`Error in storeScrapedData: ${error.message}`);
     
-    // Update job status if jobId is provided
-    if (jobId) {
+    // Update job status if jobId is provided and we're not just updating totals
+    if (jobId && !updateTotalOnly) {
       await ScraperJob.findOneAndUpdate(
         { jobId },
         { 
@@ -113,7 +131,11 @@ const storeScrapedData = async (source, data, options = {}) => {
  */
 const createScraperJob = async (jobData) => {
   try {
-    const job = await ScraperJob.create(jobData);
+    const job = await ScraperJob.create({
+      ...jobData,
+      itemsScraped: 0, // Initialize to 0
+      lastBatchTime: new Date()
+    });
     return job;
   } catch (error) {
     logger.error(`Error creating scraper job: ${error.message}`);

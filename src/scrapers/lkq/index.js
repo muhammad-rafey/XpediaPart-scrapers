@@ -10,6 +10,7 @@ const {
 const lkqApi = require('./api');
 const { mapProductToPart } = require('./mapper');
 const { getRandomUserAgent } = require('../../utils/user-agents');
+const storageService = require('../../services/storage');
 
 /**
  * Scraper for LKQ Online (https://www.lkqonline.com/)
@@ -24,6 +25,65 @@ class LkqScraper {
     this.requestDelay = config.scrapers.lkq.requestDelay;
     this.parallelRequests = config.scrapers.lkq.parallelRequests;
     this.cookies = config.scrapers.lkq.cookies;
+    this.totalProductsScraped = 0;
+    this.currentJobId = null;
+  }
+
+  /**
+   * Set the current job ID
+   * @param {string} jobId - The job ID
+   */
+  setJobId(jobId) {
+    this.currentJobId = jobId;
+    this.totalProductsScraped = 0;
+  }
+
+  /**
+   * Save a batch of products to the database
+   * @param {Array} products - The products to save
+   * @returns {Promise<number>} - The total number of products saved
+   */
+  async saveBatchToDatabase(products) {
+    try {
+      if (!products || products.length === 0) {
+        return this.totalProductsScraped;
+      }
+
+      logger.info(`Mapping and saving batch of ${products.length} products to database`);
+      
+      // Map the products to the database model
+      const mappedProducts = products.map(product => {
+        try {
+          return mapProductToPart(product);
+        } catch (error) {
+          logger.error(`Error mapping product: ${error.message}`);
+          return null;
+        }
+      }).filter(Boolean);
+      
+      logger.info(`Successfully mapped ${mappedProducts.length} products for saving`);
+      
+      // Save to database if we have a job ID
+      if (this.currentJobId) {
+        const storageResult = await storageService.storeScrapedData('lkq', mappedProducts, {
+          jobId: this.currentJobId,
+          updateTotalOnly: true,
+          currentTotal: this.totalProductsScraped
+        });
+        
+        // Update the total products scraped
+        this.totalProductsScraped = storageResult.totalItemsScraped;
+        
+        logger.info(`Batch saved to database. Total products saved: ${this.totalProductsScraped}`);
+        return this.totalProductsScraped;
+      } else {
+        logger.warn('No job ID set, skipping database save');
+        return this.totalProductsScraped;
+      }
+    } catch (error) {
+      logger.error(`Error saving batch to database: ${error.message}`);
+      return this.totalProductsScraped;
+    }
   }
 
   /**
@@ -139,10 +199,19 @@ class LkqScraper {
           // Reset consecutive errors on success
           consecutiveErrors = 0;
           
-          // Add products to our collection
-          allProducts = [...allProducts, ...products];
+          // Process this batch of products with details if needed
+          let processedProducts = products;
+          if (config.scrapers.lkq.fetchDetailsForCategory) {
+            processedProducts = await this.fetchProductDetails(products);
+          }
           
-          logger.info(`Fetched batch of ${products.length} products, total: ${allProducts.length}`);
+          // Save this batch to the database
+          await this.saveBatchToDatabase(processedProducts);
+          
+          // Add products to our collection for the complete return value
+          allProducts = [...allProducts, ...processedProducts];
+          
+          logger.info(`Fetched and processed batch of ${products.length} products, total: ${allProducts.length}`);
           
           // Check if we have more products to fetch based on total count in response
           if (response.count) {
@@ -250,15 +319,24 @@ class LkqScraper {
           // Reset consecutive errors on success
           consecutiveErrors = 0;
           
-          // Add products to our collection
-          allProducts = [...allProducts, ...products];
+          // Process this batch of products with details if needed
+          let processedProducts = products;
+          if (config.scrapers.lkq.fetchDetailsForUrl) {
+            processedProducts = await this.fetchProductDetails(products);
+          }
           
-          logger.info(`Fetched batch of ${products.length} products, total: ${allProducts.length}`);
+          // Save this batch to the database
+          await this.saveBatchToDatabase(processedProducts);
+          
+          // Add products to our collection
+          allProducts = [...allProducts, ...processedProducts];
+          
+          logger.info(`Fetched and processed batch of ${products.length} products, total: ${allProducts.length}`);
           
           // Check if we have more products to fetch based on total count in response
           if (response.count) {
             const totalCount = parseInt(response.count, 10);
-            hasMore = (skip + take) < totalCount;
+            hasMore = (skip + currentTake) < totalCount;
             logger.info(`Progress: ${allProducts.length}/${totalCount} products (${Math.round(allProducts.length / totalCount * 100)}%)`);
           } else {
             // If no count is provided, use the batch size to determine if there might be more
@@ -357,6 +435,12 @@ class LkqScraper {
       
       // Wait for all promises in the batch to resolve
       const batchResults = await Promise.all(detailsPromises);
+      
+      // Save this batch of detailed products to the database
+      if (config.scrapers.lkq.saveDetailBatches) {
+        await this.saveBatchToDatabase(batchResults);
+      }
+      
       productsWithDetails.push(...batchResults);
       
       // Add delay between batches to avoid rate limiting
@@ -400,8 +484,19 @@ class LkqScraper {
     const {
       maxProducts = Infinity,
       fetchDetails = true,
-      usePresetUrls = false
+      usePresetUrls = false,
+      jobId = null
     } = options;
+    
+    // Set the job ID if provided
+    if (jobId) {
+      this.setJobId(jobId);
+    }
+    
+    // Configure detail fetching flags based on options
+    config.scrapers.lkq.fetchDetailsForCategory = fetchDetails;
+    config.scrapers.lkq.fetchDetailsForUrl = fetchDetails;
+    config.scrapers.lkq.saveDetailBatches = true;
     
     // Normalize categories to array
     const categoryList = Array.isArray(categories) ? categories : [categories];
@@ -444,14 +539,8 @@ class LkqScraper {
           
           logger.info(`Fetched ${products.length} products from URL ${url}`);
           
-          // Fetch detailed information if requested
-          let productsWithDetails = products;
-          if (fetchDetails) {
-            productsWithDetails = await this.fetchProductDetails(products);
-          }
-          
           // Add products to the total
-          allProducts = [...allProducts, ...productsWithDetails];
+          allProducts = [...allProducts, ...products];
           
           logger.info(`Completed processing URL, total products: ${allProducts.length}`);
         }
@@ -479,14 +568,8 @@ class LkqScraper {
             
             logger.info(`Fetched ${products.length} products from URL ${category}`);
             
-            // Fetch detailed information if requested
-            let productsWithDetails = products;
-            if (fetchDetails) {
-              productsWithDetails = await this.fetchProductDetails(products);
-            }
-            
             // Add products to the total
-            allProducts = [...allProducts, ...productsWithDetails];
+            allProducts = [...allProducts, ...products];
             
             logger.info(`Completed processing URL, total products: ${allProducts.length}`);
           } else {
@@ -509,27 +592,40 @@ class LkqScraper {
             
             logger.info(`Fetched ${products.length} products from category ${category}`);
             
-            // Fetch detailed information if requested
-            let productsWithDetails = products;
-            if (fetchDetails) {
-              productsWithDetails = await this.fetchProductDetails(products);
-            }
-            
             // Add products to the total
-            allProducts = [...allProducts, ...productsWithDetails];
+            allProducts = [...allProducts, ...products];
             
             logger.info(`Completed processing category ${category}, total products: ${allProducts.length}`);
           }
         }
       }
       
-      // Map products to database model
-      const mappedProducts = this.mapProducts(allProducts);
+      // Mark job as complete if we have a job ID
+      if (this.currentJobId) {
+        await storageService.updateScraperJob(this.currentJobId, {
+          status: 'completed',
+          endTime: new Date(),
+          duration: (new Date() - (await storageService.getScraperJob(this.currentJobId)).startTime) / 1000
+        });
+      }
       
-      logger.info(`LKQ scraper completed, scraped ${mappedProducts.length} products`);
-      return mappedProducts;
+      logger.info(`LKQ scraper completed, scraped ${allProducts.length} products`);
+      return allProducts;
     } catch (error) {
       logger.error(`LKQ scraper failed: ${error.message}`);
+      
+      // Mark job as failed if we have a job ID
+      if (this.currentJobId) {
+        await storageService.updateScraperJob(this.currentJobId, {
+          status: 'failed',
+          endTime: new Date(),
+          error: {
+            message: error.message,
+            stack: error.stack
+          }
+        });
+      }
+      
       throw error;
     }
   }

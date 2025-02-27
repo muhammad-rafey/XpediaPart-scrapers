@@ -13,6 +13,7 @@ const { getRandomUserAgent } = require('../../utils/user-agents');
  * @returns {Promise<Object>} - API response data
  */
 async function makeApiRequest(endpoint, params = {}, method = 'GET', customHeaders = {}) {
+  console.log(params)
   try {
     // Ensure action parameter is included for all requests
     if (!params.action && method.toUpperCase() === 'GET') {

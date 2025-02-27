@@ -39,6 +39,17 @@ const runLkqScraper = async (req, res) => {
     // Generate a job ID
     const jobId = Date.now().toString();
     
+    // Create a scraper job record
+    await storageService.createScraperJob({
+      jobId,
+      source: 'lkq',
+      query,
+      options: {
+        ...options
+      },
+      status: 'pending',
+    });
+    
     // Merge options with job ID
     const scraperOptions = {
       ...options,
@@ -56,21 +67,14 @@ const runLkqScraper = async (req, res) => {
     });
     
     try {
-      // Run the scraper
-      const scrapedData = await lkqScraper.scrape(query, scraperOptions);
+      // Run the scraper with job ID - the scraper will save data after each batch
+      await lkqScraper.scrape(query, scraperOptions);
       
-      // Store the data
-      const storageResult = await storageService.storeScrapedData('lkq', scrapedData, { jobId });
-      
-      logger.info(`LKQ scraper completed for query: ${query}. Storage result: ${JSON.stringify({
-        total: storageResult.total,
-        created: storageResult.created,
-        updated: storageResult.updated,
-        failed: storageResult.failed
-      })}`);
+      logger.info(`LKQ scraper completed for query: ${query} with job ID: ${jobId}`);
     } catch (error) {
       logger.error(`Error in LKQ scraper job ${jobId}: ${error.message}`);
       // We already returned a response to the client, so we just log the error
+      // The scraper has its own error handling that will update the job status
     }
   } catch (error) {
     logger.error(`Error starting LKQ scraper: ${error.message}`);
@@ -104,6 +108,7 @@ const getScraperJobStatus = async (req, res) => {
       endTime: job.endTime,
       duration: job.duration,
       itemsScraped: job.itemsScraped,
+      lastBatchTime: job.lastBatchTime,
       error: job.error ? {
         message: job.error.message
       } : null,

@@ -34,7 +34,7 @@ const fs = require('fs');
 const args = process.argv.slice(2);
 const query = args[0] || 'Engine Compartment|Alternator';
 const batchSize = args[1] ? parseInt(args[1], 10) : config.scrapers.lkq.batchSize;
-const maxProducts = args[2] ? parseInt(args[2], 10) : 100;
+const maxProducts = args[2] ? parseInt(args[2], 10) : 10000;
 const cookiesFile = args[3] || null;
 const usePresetUrls = args[4] === 'true';
 

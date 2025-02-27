@@ -32,11 +32,11 @@ const mapProductToPart = (product) => {
       }
     }
     
-    // Map compatibility from fitments
+    // Map compatibility from fitments - keep original year value without parsing
     const compatibility = fitments.map(fitment => ({
       make: fitment.SystemMake || '',
       model: fitment.SystemModel || '',
-      year: parseInt(fitment.SystemYear, 10) || 0,
+      year: fitment.SystemYear || 0, // Keep as is, no parseInt
       trim: '',
     }));
     
@@ -56,12 +56,12 @@ const mapProductToPart = (product) => {
       });
     }
     
-    // Map price information
+    // Map price information - keep original price format
     let price = 0;
     let currency = 'USD';
     
-    if (product.price) {
-      price = product.price;
+    if (product.price !== undefined) {
+      price = product.price; // Keep original format, whether string or number
     } else if (product.pricing && product.pricing.length > 0) {
       price = product.pricing[0].customerPrice || 0;
     }
@@ -76,6 +76,30 @@ const mapProductToPart = (product) => {
         specifications[key] = value;
       }
     });
+    
+    // Collect other fields to save in otherParams
+    const otherParams = {};
+    
+    // Add any fields from product that we don't explicitly map
+    Object.keys(product).forEach(key => {
+      // Skip fields we already handle explicitly
+      const explicitFields = [
+        'number', 'id', 'descriptionRetail', 'description', 'price', 
+        'sourceVehicleMake', 'category', 'availability', 'ftcDisplay',
+        'interchange', 'sourceVehicleYear', 'sourceVehicleModel', 
+        'mileage', 'location', 'yardCity', 'yardState', 'catalog',
+        'isReman', 'images', 'pricing', '_salvageSourceVehicle', 'fitmentJson'
+      ];
+      
+      if (!explicitFields.includes(key)) {
+        otherParams[key] = product[key];
+      }
+    });
+    
+    // If product has details, add them to otherParams
+    if (product.details) {
+      otherParams.details = product.details;
+    }
     
     // Create the part object
     const part = {
@@ -110,14 +134,24 @@ const mapProductToPart = (product) => {
         catalogId: product.catalog ? product.catalog.id : 0,
         catalogName: product.catalog ? product.catalog.name : '',
         isReman: product.isReman || false,
-        rawData: JSON.stringify(product), // Store the raw data for reference
       },
+      // Add the otherParams
+      otherParams,
     };
     
     return part;
   } catch (error) {
     logger.error(`Error mapping product to part: ${error.message}`);
-    return null;
+    // Even if there's an error, try to return a basic part with the raw data
+    return {
+      partNumber: product?.number || product?.id || 'unknown',
+      name: product?.descriptionRetail || product?.description || 'Unknown part',
+      source: 'lkq',
+      otherParams: {
+        rawData: product ? JSON.stringify(product) : 'Error mapping product',
+        mappingError: error.message
+      }
+    };
   }
 };
 

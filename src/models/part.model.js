@@ -15,7 +15,7 @@ const partSchema = new mongoose.Schema(
       type: String,
     },
     price: {
-      type: Number,
+      type: mongoose.Schema.Types.Mixed,
     },
     currency: {
       type: String,
@@ -34,7 +34,7 @@ const partSchema = new mongoose.Schema(
       {
         make: String,
         model: String,
-        year: Number,
+        year: mongoose.Schema.Types.Mixed,
         trim: String,
       },
     ],
@@ -46,7 +46,7 @@ const partSchema = new mongoose.Schema(
     ],
     specifications: {
       type: Map,
-      of: String,
+      of: mongoose.Schema.Types.Mixed,
     },
     source: {
       type: String,
@@ -62,7 +62,7 @@ const partSchema = new mongoose.Schema(
       default: false,
     },
     quantity: {
-      type: Number,
+      type: mongoose.Schema.Types.Mixed,
       default: 0,
     },
     condition: {
@@ -74,9 +74,14 @@ const partSchema = new mongoose.Schema(
       type: Map,
       of: mongoose.Schema.Types.Mixed,
     },
+    otherParams: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
   },
   {
     timestamps: true,
+    strict: false,
   }
 );
 
